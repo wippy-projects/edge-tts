@@ -1,0 +1,12 @@
+organization: butschster
+module: edge-tts
+description: Text-to-Speech module using Microsoft Edge Read Aloud via WebSocket
+license: MIT
+repository: https://github.com/wippy-projects/edge-tts
+keywords:
+  - tts
+  - text-to-speech
+  - edge-tts
+  - voice
+  - audio
+  - speech

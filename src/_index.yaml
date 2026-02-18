@@ -1,0 +1,15 @@
+version: "1.0"
+namespace: edge_tts
+
+entries:
+  # ── Package Definition ─────────────────────────────────
+  - name: definition
+    kind: ns.definition
+    meta:
+      title: Edge TTS
+      description: Text-to-Speech synthesis using Microsoft Edge Read Aloud via WebSocket
+
+  # ── Core TTS Library ───────────────────────────────────
+  - name: tts
+    kind: library.lua
+    source: file://tts.lua

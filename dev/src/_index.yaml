@@ -1,0 +1,132 @@
+version: "1.0"
+namespace: app
+
+entries:
+  # ── Process Host ────────────────────────────────────────
+  - name: processes
+    kind: process.host
+    host:
+      workers: 16
+    lifecycle:
+      auto_start: true
+
+  # ── HTTP Server (for TTS endpoint demo) ─────────────────
+  - name: gateway
+    kind: http.service
+    addr: ":8080"
+    lifecycle:
+      auto_start: true
+
+  - name: router
+    kind: http.router
+    meta:
+      server: app:gateway
+    prefix: /api
+
+  # ── Edge TTS Voices ─────────────────────────────────────
+
+  # Russian voices (MP3)
+  - name: voice.ru.male
+    kind: edge_tts.voice
+    meta:
+      voice_id: "ru-RU-DmitryNeural"
+      language: "ru-RU"
+      gender: "male"
+      description: "Дмитрий — мужской русский голос"
+
+  - name: voice.ru.female
+    kind: edge_tts.voice
+    meta:
+      voice_id: "ru-RU-SvetlanaNeural"
+      language: "ru-RU"
+      gender: "female"
+      description: "Светлана — женский русский голос"
+
+  # Russian voices for Telegram (OGG Opus)
+  - name: voice.ru.male.tg
+    kind: edge_tts.voice
+    meta:
+      voice_id: "ru-RU-DmitryNeural"
+      language: "ru-RU"
+      gender: "male"
+      output_format: "ogg-24khz-16bit-mono-opus"
+      description: "Дмитрий — для Telegram voice messages"
+
+  - name: voice.ru.female.tg
+    kind: edge_tts.voice
+    meta:
+      voice_id: "ru-RU-SvetlanaNeural"
+      language: "ru-RU"
+      gender: "female"
+      output_format: "ogg-24khz-16bit-mono-opus"
+      description: "Светлана — для Telegram voice messages"
+
+  # English voices
+  - name: voice.en.male
+    kind: edge_tts.voice
+    meta:
+      voice_id: "en-US-GuyNeural"
+      language: "en-US"
+      gender: "male"
+      description: "Guy — мужской английский голос"
+
+  - name: voice.en.female
+    kind: edge_tts.voice
+    meta:
+      voice_id: "en-US-JennyNeural"
+      language: "en-US"
+      gender: "female"
+      description: "Jenny — женский английский голос"
+
+  # Russian voice with fast rate preset
+  - name: voice.ru.fast
+    kind: edge_tts.voice
+    meta:
+      voice_id: "ru-RU-DmitryNeural"
+      language: "ru-RU"
+      gender: "male"
+      rate: "+30%"
+      description: "Дмитрий — быстрая речь"
+
+  # ── Test: Basic Synthesis ───────────────────────────────
+  - name: test_basic
+    kind: process.lua
+    source: file://test_basic.lua
+    method: main
+    modules: [edge_tts, logger]
+
+  - name: test_basic.service
+    kind: process.service
+    process: app:test_basic
+    host: app:processes
+    lifecycle:
+      auto_start: true
+
+  # ── Test: Voice List ────────────────────────────────────
+  - name: test_voices
+    kind: process.lua
+    source: file://test_voices.lua
+    method: main
+    modules: [edge_tts, logger]
+
+  - name: test_voices.service
+    kind: process.service
+    process: app:test_voices
+    host: app:processes
+    lifecycle:
+      auto_start: true
+
+  # ── TTS HTTP Endpoint ──────────────────────────────────
+  - name: tts_handler
+    kind: function.lua
+    source: file://tts_handler.lua
+    method: handler
+    modules: [edge_tts, http, json]
+
+  - name: tts_endpoint
+    kind: http.endpoint
+    meta:
+      router: app:router
+    method: POST
+    path: /tts
+    func: app:tts_handler
