@@ -2,22 +2,54 @@ local websocket = require("websocket")
 local json = require("json")
 local uuid = require("uuid")
 local time = require("time")
+local hash = require("hash")
+local logger = require("logger")
 
 -- ── Constants ────────────────────────────────────────────
 
 local TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
 
-local WSS_URL = "wss://speech.platform.bing.com/consumer/speech/synthesize/"
-    .. "readaloud/edge/v1?TrustedClientToken=" .. TRUSTED_CLIENT_TOKEN
+local CHROMIUM_FULL_VERSION = "143.0.3650.75"
+local SEC_MS_GEC_VERSION = "1-" .. CHROMIUM_FULL_VERSION
+
+local BASE_WSS_URL = "wss://speech.platform.bing.com/consumer/speech/synthesize/"
+    .. "readaloud/edge/v1"
 
 local VOICE_LIST_URL = "https://speech.platform.bing.com/consumer/speech/synthesize/"
     .. "readaloud/voices/list?trustedclienttoken=" .. TRUSTED_CLIENT_TOKEN
 
 local USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     .. "AppleWebKit/537.36 (KHTML, like Gecko) "
-    .. "Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0"
+    .. "Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
 
 local ORIGIN = "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold"
+
+-- ── Sec-MS-GEC Token Generation ─────────────────────────
+-- Windows file time epoch offset from Unix epoch (seconds)
+local WIN_EPOCH = 11644473600
+-- 100-nanosecond intervals per second
+local NS100_PER_SEC = 10000000
+
+local function generate_sec_ms_gec(): string
+    local ticks = os.time() + WIN_EPOCH
+    -- Round down to nearest 5-minute (300s) interval
+    ticks = ticks - (ticks % 300)
+    -- Convert to Windows file time (100-nanosecond intervals)
+    -- Use %d to avoid float precision loss (value ~1.3e17 exceeds float64 mantissa)
+    ticks = ticks * NS100_PER_SEC
+    local str_to_hash = string.format("%d%s", ticks, TRUSTED_CLIENT_TOKEN)
+    local hex = hash.sha256(str_to_hash)
+    return hex:upper()
+end
+
+local function build_wss_url(): string
+    local gec = generate_sec_ms_gec()
+    return BASE_WSS_URL
+        .. "?TrustedClientToken=" .. TRUSTED_CLIENT_TOKEN
+        .. "&Sec-MS-GEC=" .. gec
+        .. "&Sec-MS-GEC-Version=" .. SEC_MS_GEC_VERSION
+        .. "&ConnectionId=" .. uuid.v4():gsub("-", "")
+end
 
 local DEFAULT_OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3"
 
@@ -196,19 +228,27 @@ local function synthesize_direct(options: SynthesizeDirectOptions): (AudioResult
     local output_format = options.output_format or DEFAULT_OUTPUT_FORMAT
     local timeout = options.timeout or "30s"
 
-    -- 2. Connect WebSocket
-    local client, err = websocket.connect(WSS_URL, {
+    -- 2. Connect WebSocket (with Sec-MS-GEC token and MUID cookie)
+    local wss_url = build_wss_url()
+    local muid = uuid.v4():gsub("-", ""):upper()
+    logger:info("TTS connecting WebSocket", { voice_id = options.voice_id })
+    local client, err = websocket.connect(wss_url, {
         headers = {
             ["Origin"] = ORIGIN,
             ["User-Agent"] = USER_AGENT,
             ["Pragma"] = "no-cache",
-            ["Cache-Control"] = "no-cache"
+            ["Cache-Control"] = "no-cache",
+            ["Accept-Encoding"] = "gzip, deflate, br, zstd",
+            ["Accept-Language"] = "en-US,en;q=0.9",
+            ["Cookie"] = "muid=" .. muid .. ";",
         },
         dial_timeout = timeout
     })
     if err then
+        logger:error("TTS WebSocket connect failed", { error = tostring(err) })
         return nil, err
     end
+    logger:info("TTS WebSocket connected")
 
     -- 3. Send speech.config
     local request_id = generate_request_id()
@@ -218,6 +258,7 @@ local function synthesize_direct(options: SynthesizeDirectOptions): (AudioResult
         client:close()
         return nil, send_err
     end
+    logger:info("TTS speech.config sent")
 
     -- 4. Send SSML
     local ssml = build_ssml(options.voice_id, options.text, rate, volume, pitch)
@@ -227,6 +268,7 @@ local function synthesize_direct(options: SynthesizeDirectOptions): (AudioResult
         client:close()
         return nil, send_err
     end
+    logger:info("TTS SSML sent, waiting for audio", { output_format = output_format })
 
     -- 5. Receive audio chunks
     local audio_chunks = {}
@@ -240,15 +282,21 @@ local function synthesize_direct(options: SynthesizeDirectOptions): (AudioResult
         }
 
         if r.channel == timeout_ch then
+            logger:warn("TTS receive timed out", { chunks_received = #audio_chunks })
             client:close()
             return nil, errors.new({kind = errors.TIMEOUT, message = "TTS synthesis timed out"})
         end
 
         if not r.ok then
+            logger:info("TTS WebSocket closed", { chunks_received = #audio_chunks })
             break -- connection closed
         end
 
         local msg = r.value
+        logger:info("TTS ws message", {
+            type = msg.type,
+            size = msg.data and #msg.data or 0,
+        })
         if msg.type == "binary" then
             local audio_data = extract_audio_from_binary(msg.data)
             if audio_data then
@@ -256,6 +304,7 @@ local function synthesize_direct(options: SynthesizeDirectOptions): (AudioResult
             end
         elseif msg.type == "text" then
             if string.find(msg.data, "Path:turn.end") then
+                logger:info("TTS turn.end received", { chunks = #audio_chunks })
                 break
             end
         end
@@ -294,11 +343,12 @@ local function synthesize(voice_ref: string, text: string, options: table?): (Au
         })
     end
 
-    -- 2. Validate entry kind
-    if entry.kind ~= "edge_tts.voice" then
+    -- 2. Validate entry type (supports both kind and meta.type)
+    local entry_type = (entry.meta and entry.meta.type) or entry.kind
+    if entry_type ~= "edge_tts.voice" then
         return nil, errors.new({
             kind = errors.INVALID,
-            message = "Entry is not edge_tts.voice: " .. entry.kind
+            message = "Entry is not edge_tts.voice: " .. tostring(entry_type)
         })
     end
 
