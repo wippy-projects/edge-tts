@@ -231,7 +231,7 @@ local function synthesize_direct(options: SynthesizeDirectOptions): (AudioResult
     -- 2. Connect WebSocket (with Sec-MS-GEC token and MUID cookie)
     local wss_url = build_wss_url()
     local muid = uuid.v4():gsub("-", ""):upper()
-    logger:info("TTS connecting WebSocket", { voice_id = options.voice_id })
+    logger:debug("TTS connecting WebSocket", { voice_id = options.voice_id })
     local client, err = websocket.connect(wss_url, {
         headers = {
             ["Origin"] = ORIGIN,
@@ -248,7 +248,7 @@ local function synthesize_direct(options: SynthesizeDirectOptions): (AudioResult
         logger:error("TTS WebSocket connect failed", { error = tostring(err) })
         return nil, err
     end
-    logger:info("TTS WebSocket connected")
+    logger:debug("TTS WebSocket connected")
 
     -- 3. Send speech.config
     local request_id = generate_request_id()
@@ -258,7 +258,7 @@ local function synthesize_direct(options: SynthesizeDirectOptions): (AudioResult
         client:close()
         return nil, send_err
     end
-    logger:info("TTS speech.config sent")
+    logger:debug("TTS speech.config sent")
 
     -- 4. Send SSML
     local ssml = build_ssml(options.voice_id, options.text, rate, volume, pitch)
@@ -268,7 +268,7 @@ local function synthesize_direct(options: SynthesizeDirectOptions): (AudioResult
         client:close()
         return nil, send_err
     end
-    logger:info("TTS SSML sent, waiting for audio", { output_format = output_format })
+    logger:debug("TTS SSML sent, waiting for audio", { output_format = output_format })
 
     -- 5. Receive audio chunks
     local audio_chunks = {}
@@ -288,12 +288,12 @@ local function synthesize_direct(options: SynthesizeDirectOptions): (AudioResult
         end
 
         if not r.ok then
-            logger:info("TTS WebSocket closed", { chunks_received = #audio_chunks })
+            logger:debug("TTS WebSocket closed", { chunks_received = #audio_chunks })
             break -- connection closed
         end
 
         local msg = r.value
-        logger:info("TTS ws message", {
+        logger:debug("TTS ws message", {
             type = msg.type,
             size = msg.data and #msg.data or 0,
         })
